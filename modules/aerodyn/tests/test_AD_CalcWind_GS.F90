@@ -17,6 +17,8 @@ use testdrive, only: new_unittest, unittest_type, error_type, check
 use AeroDyn, only: AD_CalcWind_GS
 use AeroDyn_Types, only: GSParameterType, AD_ParameterType, AD_MiscVarType, RotInputType, ElemInflowType
 use IfW_FlowField_Types, only: FlowFieldType
+use SeaSt_WaveField, only: WaveField_GetWaveVelAcc_AD
+use SeaSt_WaveField_Types, only: SeaSt_WaveFieldType, WaveMod_None
 use NWTC_Library, only: SetConstants, MeshCreate, MeshDestroy, COMPONENT_INPUT, &
                          MHK_None, MHK_FixedBottom, ErrID_None, IntKi, ReKi, DbKi, ErrMsgLen
 
@@ -31,7 +33,7 @@ subroutine test_AD_CalcWind_GS_suite(testsuite)
    testsuite = [ &
       new_unittest("disabled general support", test_disabled_GS), &
       new_unittest("general support without flow field", test_GS_without_flow_field), &
-      new_unittest("MHK waves without flow field", test_GS_mhk_waves_without_flow_field) &
+      new_unittest("MHK sea state without flow field", test_GS_mhk_waves_without_flow_field) &
    ]
 end subroutine
 
@@ -67,6 +69,9 @@ subroutine check_GS_wind(hasGSMod, error, MHK, CompSeaSt)
    type(AD_MiscVarType) :: m
    type(ElemInflowType) :: GSInflow
    type(FlowFieldType), pointer :: FlowField
+   type(SeaSt_WaveFieldType), target :: WaveField
+   real(ReKi) :: WavePosition(3, node_count), WaveReference(3, node_count)
+   real(ReKi), allocatable :: NoAcc(:,:)
    integer(IntKi) :: StartNode, ErrStat
    character(ErrMsgLen) :: ErrMsg
 
@@ -88,11 +93,28 @@ subroutine check_GS_wind(hasGSMod, error, MHK, CompSeaSt)
    u%GSMotion%Position = 0.0_ReKi
    u%GSMotion%TranslationDisp = 0.0_ReKi
 
+   if (p%MHK == MHK_FixedBottom .and. p_AD%CompSeaSt) then
+      u%GSMotion%Position(3, :) = 1.0_ReKi
+      WaveField%EffWtrDpth = 100.0_ReKi
+      WaveField%MSL2SWL = 0.0_ReKi
+      WaveField%WaveStMod = 0_IntKi
+      WaveField%WaveMod = WaveMod_None
+      WaveField%hasCurrField = .false.
+      p_AD%WaveField => WaveField
+      WavePosition = u%GSMotion%Position + u%GSMotion%TranslationDisp
+      call WaveField_GetWaveVelAcc_AD(WaveField, m%WaveField_m, 7_IntKi, 0.0_DbKi, &
+                                      WavePosition, WaveReference, NoAcc, ErrStat, ErrMsg)
+      call check(error, ErrID_None, ErrStat, message="Reference wave call must succeed")
+      if (allocated(error)) return
+      call check(error, all(WaveReference == 0.0_ReKi), message="Above-water reference velocity must be zero")
+      if (allocated(error)) return
+   end if
+
    StartNode = 7_IntKi
    call AD_CalcWind_GS(0.0_DbKi, u, FlowField, p, p_AD, m, GSInflow, StartNode, ErrStat, ErrMsg)
    call check(error, ErrID_None, ErrStat)
    if (allocated(error)) return
-   call check(error, all(GSInflow%InflowVel == sentinel))
+   call check(error, all(GSInflow%InflowVel == sentinel), message="Missing FlowField must preserve initialized inflow")
    if (allocated(error)) return
    if (hasGSMod) then
       call check(error, 7_IntKi + node_count, StartNode)
