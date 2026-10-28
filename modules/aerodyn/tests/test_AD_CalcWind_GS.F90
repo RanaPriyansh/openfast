@@ -17,7 +17,8 @@ use testdrive, only: new_unittest, unittest_type, error_type, check
 use AeroDyn, only: AD_CalcWind_GS
 use AeroDyn_Types, only: GSParameterType, AD_ParameterType, AD_MiscVarType, RotInputType, ElemInflowType
 use IfW_FlowField_Types, only: FlowFieldType
-use NWTC_Library, only: SetConstants, MeshCreate, MeshDestroy, COMPONENT_INPUT, MHK_None, ErrID_None, IntKi, ReKi, DbKi, ErrMsgLen
+use NWTC_Library, only: SetConstants, MeshCreate, MeshDestroy, COMPONENT_INPUT, &
+                         MHK_None, MHK_FixedBottom, ErrID_None, IntKi, ReKi, DbKi, ErrMsgLen
 
 implicit none
 private
@@ -29,7 +30,8 @@ subroutine test_AD_CalcWind_GS_suite(testsuite)
    type(unittest_type), allocatable, intent(out) :: testsuite(:)
    testsuite = [ &
       new_unittest("disabled general support", test_disabled_GS), &
-      new_unittest("general support without flow field", test_GS_without_flow_field) &
+      new_unittest("general support without flow field", test_GS_without_flow_field), &
+      new_unittest("MHK waves without flow field", test_GS_mhk_waves_without_flow_field) &
    ]
 end subroutine
 
@@ -43,9 +45,16 @@ subroutine test_disabled_GS(error)
    call check_GS_wind(.false., error)
 end subroutine
 
-subroutine check_GS_wind(hasGSMod, error)
+subroutine test_GS_mhk_waves_without_flow_field(error)
+   type(error_type), allocatable, intent(out) :: error
+   call check_GS_wind(.true., error, MHK_FixedBottom, .true.)
+end subroutine
+
+subroutine check_GS_wind(hasGSMod, error, MHK, CompSeaSt)
    logical, intent(in) :: hasGSMod
    type(error_type), allocatable, intent(out) :: error
+   integer(IntKi), intent(in), optional :: MHK
+   logical, intent(in), optional :: CompSeaSt
    integer(IntKi), parameter :: node_count = 3_IntKi
    real(ReKi), parameter :: sentinel(3, node_count) = reshape([ &
       1.25_ReKi, -2.5_ReKi, 3.75_ReKi, &
@@ -66,7 +75,10 @@ subroutine check_GS_wind(hasGSMod, error)
    p%hasGSMod = hasGSMod
    p%NNodes = node_count
    p%MHK = MHK_None
+   if (present(MHK)) p%MHK = MHK
    p_AD%CompSeaSt = .false.
+   if (present(CompSeaSt)) p_AD%CompSeaSt = CompSeaSt
+   nullify(p_AD%WaveField)
    allocate(GSInflow%InflowVel(3, node_count))
    GSInflow%InflowVel = sentinel
 

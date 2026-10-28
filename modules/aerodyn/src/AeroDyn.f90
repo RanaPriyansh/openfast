@@ -619,6 +619,7 @@ subroutine AD_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
       ! Module Variables
       !............................................................................................
 
+   ! FlowField must be attached before AD_Init to register extended wind inputs.
    do iR = 1, nRotors
       call AD_InitVars(iR, u%rotors(iR), p%rotors(iR), x%rotors(iR), z%rotors(iR), OtherState%rotors(iR), y%rotors(iR), m%rotors(iR), InitOut%rotors(iR), &
                        InputFileData%rotors(iR), InitInp%Linearize, InitInp%CompAeroMaps, associated(p%FlowField), ErrStat2, ErrMsg2)
@@ -2289,6 +2290,10 @@ subroutine AD_CalcWind_GS(t, u, FlowField, p, p_AD, m, GSInflow, StartNode, ErrS
    ErrMsg = ""
 
    if (.not.p%hasGSMod) return
+   if (.not. associated(FlowField)) then
+      StartNode = StartNode + p%NNodes
+      return
+   end if
 
    ! If rotor is MHK, add water depth to z coordinate
    if (p%MHK /= MHK_None) then
@@ -2304,7 +2309,7 @@ subroutine AD_CalcWind_GS(t, u, FlowField, p, p_AD, m, GSInflow, StartNode, ErrS
                                        NoAcc, ErrStat2, ErrMsg2, &
                                        BoxExceedAllow=.true.)
       if(Failed()) return
-   else if (associated(FlowField)) then
+   else
       call IfW_FlowField_GetVelAcc(FlowField, StartNode, t, &
                                     real(u%GSMotion%Position + u%GSMotion%TranslationDisp, ReKi), &
                                     GSInflow%InflowVel, &
