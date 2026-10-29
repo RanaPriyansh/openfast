@@ -619,9 +619,10 @@ subroutine AD_Init( InitInp, u, p, x, xd, z, OtherState, y, m, Interval, InitOut
       ! Module Variables
       !............................................................................................
 
+   ! FlowField must be attached before AD_Init to register extended wind inputs.
    do iR = 1, nRotors
       call AD_InitVars(iR, u%rotors(iR), p%rotors(iR), x%rotors(iR), z%rotors(iR), OtherState%rotors(iR), y%rotors(iR), m%rotors(iR), InitOut%rotors(iR), &
-                       InputFileData%rotors(iR), InitInp%Linearize, InitInp%CompAeroMaps, ErrStat2, ErrMsg2)
+                       InputFileData%rotors(iR), InitInp%Linearize, InitInp%CompAeroMaps, associated(p%FlowField), ErrStat2, ErrMsg2)
       if (Failed()) return;
    end do
    
@@ -2289,6 +2290,10 @@ subroutine AD_CalcWind_GS(t, u, FlowField, p, p_AD, m, GSInflow, StartNode, ErrS
    ErrMsg = ""
 
    if (.not.p%hasGSMod) return
+   if (.not. associated(FlowField)) then
+      StartNode = StartNode + p%NNodes
+      return
+   end if
 
    ! If rotor is MHK, add water depth to z coordinate
    if (p%MHK /= MHK_None) then
@@ -6119,8 +6124,9 @@ SUBROUTINE TwrInflArray( p, u, RotInflow, m, Positions, Inflow, ErrStat, ErrMsg 
    ! these models are valid for only small tower deflections; check for potential division-by-zero errors:   
    call CheckTwrInfl( u, ErrStat2, ErrMsg2 ); call SetErrStat(ErrStat2, ErrMsg2, ErrStat, ErrMsg, RoutineName ); if (ErrStat >= AbortErrLev) return
 
+   ! FirstWarn_TowerStrike is firstprivate so each thread starts from the .false. set above (avoids reading uninitialized memory); ErrStat2/ErrMsg2 are private to avoid a data race
    !$OMP PARALLEL default(shared)
-   !$OMP do private(i,Pos,theta_tower_trans,W_tower,xbar,ybar,zbar,TwrCd,TwrTI,TwrClrnc,FirstWarn_TowerStrike,DisturbInflow,v) schedule(runtime)
+   !$OMP do private(i,Pos,theta_tower_trans,W_tower,xbar,ybar,zbar,TwrCd,TwrTI,TwrClrnc,DisturbInflow,v,ErrStat2,ErrMsg2) firstprivate(FirstWarn_TowerStrike) schedule(runtime)
    do i = 1, size(Positions,2)
       Pos=Positions(1:3,i)
          
@@ -7190,7 +7196,7 @@ SUBROUTINE GSInfl_NearestPoint(p_GS, iMem, u, GSInflow, BladeNodePosition, r_GSB
 
 END SUBROUTINE GSInfl_NearestPoint
 !----------------------------------------------------------------------------------------------------------------------------------
-subroutine AD_InitVars(iR, u, p, x, z, OtherState, y, m, InitOut, InputFileData, Linearize, CompAeroMaps, ErrStat, ErrMsg)
+subroutine AD_InitVars(iR, u, p, x, z, OtherState, y, m, InitOut, InputFileData, Linearize, CompAeroMaps, FlowFieldAvailable, ErrStat, ErrMsg)
    integer(IntKi),               intent(in)     :: iR         !< Rotor number
    type(RotInputType),           intent(inout)  :: u              !< An initial guess for the input; input mesh must be defined
    type(RotParameterType),       intent(inout)  :: p              !< Parameters
@@ -7203,6 +7209,7 @@ subroutine AD_InitVars(iR, u, p, x, z, OtherState, y, m, InitOut, InputFileData,
    type(RotInputFile),           intent(in)     :: InputFileData  !< Input file data
    logical,                      intent(in)     :: Linearize      !< Flag to initialize linearization variables
    logical,                      intent(in)     :: CompAeroMaps   !< Flag to compute aero maps
+   logical,                      intent(in)     :: FlowFieldAvailable !< Whether an InflowWind flow field is available
    integer(IntKi),               intent(out)    :: ErrStat        !< Error status of the operation
    character(*),                 intent(out)    :: ErrMsg         !< Error message if ErrStat /= ErrID_None
 
@@ -7371,17 +7378,20 @@ subroutine AD_InitVars(iR, u, p, x, z, OtherState, y, m, InitOut, InputFileData,
    call MV_AddVar(InitOut%Vars%u, "HWindSpeed", FieldScalar, DatLoc(AD_u_HWindSpeed), &
                   Flags=VF_ExtLin + VF_Linearize, &
                   Perturb=Perturb, &
-                  LinNames=['Extended input: horizontal wind speed (steady/uniform wind), m/s'])
+                  LinNames=['Extended input: horizontal wind speed (steady/uniform wind), m/s'], &
+                  Active=FlowFieldAvailable)
 
    call MV_AddVar(InitOut%Vars%u, "PLExp", FieldScalar, DatLoc(AD_u_PLexp), &
                   Flags=VF_ExtLin + VF_Linearize, &
                   Perturb=Perturb, &
-                  LinNames=['Extended input: vertical power-law shear exponent, -'])
+                  LinNames=['Extended input: vertical power-law shear exponent, -'], &
+                  Active=FlowFieldAvailable)
 
    call MV_AddVar(InitOut%Vars%u, "PropagationDir", FieldScalar, DatLoc(AD_u_PropagationDir), &
                   Flags=VF_ExtLin + VF_Linearize, &
                   Perturb=Perturb, &
-                  LinNames=['Extended input: propagation direction, rad'])
+                  LinNames=['Extended input: propagation direction, rad'], &
+                  Active=FlowFieldAvailable)
 
    !----------------------------------------------------------------------------
    ! Output variables
@@ -7737,6 +7747,9 @@ contains
       PerturbFF%Uniform%VelH = BaseFF%Uniform%VelH
       PerturbFF%Uniform%ShrV = BaseFF%Uniform%ShrV
       PerturbFF%PropagationDir = BaseFF%PropagationDir
+      PerturbFF%RotToWind = BaseFF%RotToWind
+      PerturbFF%RotFromWind = BaseFF%RotFromWind
+      PerturbFF%RotateWindBox = BaseFF%RotateWindBox
       select case (Var%DL%Num)
       case (AD_u_HWindSpeed) 
          PerturbFF%Uniform%VelH = BaseFF%Uniform%VelH + Var%Perturb*PerturbSign
@@ -7744,6 +7757,15 @@ contains
          PerturbFF%Uniform%ShrV = BaseFF%Uniform%ShrV + Var%Perturb*PerturbSign
       case (AD_u_PropagationDir) 
          PerturbFF%PropagationDir = BaseFF%PropagationDir + Var%Perturb*PerturbSign
+         PerturbFF%RotToWind(1,:) = [ &
+            cos(-PerturbFF%VFlowAngle)*cos(-PerturbFF%PropagationDir), &
+            cos(-PerturbFF%VFlowAngle)*sin(-PerturbFF%PropagationDir), -sin(-PerturbFF%VFlowAngle)]
+         PerturbFF%RotToWind(2,:) = [-sin(-PerturbFF%PropagationDir), cos(-PerturbFF%PropagationDir), 0.0_ReKi]
+         PerturbFF%RotToWind(3,:) = [ &
+            sin(-PerturbFF%VFlowAngle)*cos(-PerturbFF%PropagationDir), &
+            sin(-PerturbFF%VFlowAngle)*sin(-PerturbFF%PropagationDir), cos(-PerturbFF%VFlowAngle)]
+         PerturbFF%RotFromWind = transpose(PerturbFF%RotToWind)
+         PerturbFF%RotateWindBox = .true.
       end select
    end subroutine
    
